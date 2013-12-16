@@ -115,6 +115,57 @@ Mat derY(Mat src){
     return Ap*b;
  };
 
+
+
+
+
+void get_thresh_pos(Mat src, Mat f){
+    //Stores resulting data
+     RNG rng(12345);//random number seed
+    vector<Point2f> r;
+    Point2f circleCentre;
+    vector<vector<Point> > contours;
+    vector<Vec4i> hier;
+    vector<vector<Point> > contours_poly(contours.size());
+    Mat canny_output;
+    float radius;
+    //Canny(src, canny_output, 100, 100*2, 3);
+    //Find contours
+    
+    Mat element = getStructuringElement(cv::MORPH_RECT, cv::Size(20, 20), Point(2,2));
+    Mat resultDilate;
+    dilate( src, resultDilate, element );
+    imshow("circlwe", resultDilate);
+    findContours(resultDilate, contours, hier, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
+     //Draw contours
+    Mat drawing = Mat::zeros( src.size(), CV_8UC3 );
+
+    for( int i = 0; i< contours.size(); i++ ){
+        Scalar color = Scalar( rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255) ); //This is a colour
+        drawContours( drawing, contours, i, color, 2, 8, hier, 0, Point() );
+    }
+ 
+    imshow( "Contourss", drawing );
+
+    if(contours.size()>0){
+        for (int i = 0; i < contours.size(); i++){
+            //Rect R = boundingRect( Mat(contours_poly[i]) );
+            //rectangle( src, R.tl(), R.br(), Scalar(0,0,255), 2, 8, 0 );
+                //Find minimum circle
+                //approxPolyDP(Mat(contours[i]), contours_poly[i], 3, true);
+                //Compute its radius and position
+                minEnclosingCircle( (Mat)contours[i], circleCentre, radius);
+                if(radius>100)
+                circle(f, circleCentre, radius, Scalar(0,0,255), 1, 8, 0 );
+                //r.push_back(Point2f(circleCentre.y, circleCentre.x));
+        }
+    }
+    imshow("circle", f);
+};
+
+
+
+
 int main(int, char**)
 {
     kx = Mat(3, 3, CV_32FC1, &fkX);
@@ -130,6 +181,7 @@ int main(int, char**)
          Mat frame_gray;
          Mat frame_gray2;
          cap >> frame;
+         Mat f = frame.clone();
          cvtColor(frame, frame_gray2, CV_BGR2GRAY); 
         frame_gray2.convertTo(frame_gray, CV_32FC1);
         Mat acc = Mat::zeros(frame.rows, frame.cols, CV_8UC1);
@@ -215,8 +267,12 @@ int main(int, char**)
             derx.convertTo(b, CV_8UC1);
             dery.convertTo(c, CV_8UC1);
             tilda.convertTo(d, CV_8UC1);
+
+
             imshow("acc", acc);
             imshow("asda", frame);
+            get_thresh_pos(acc, frame);
+            
             // imshow("Camera", a);
             // imshow("derx", b);
             // imshow("dery", c);
