@@ -5,160 +5,230 @@
 using namespace cv;
 using namespace std;
 
-float** kx;
-float** ky;
+Mat kx;
+Mat ky;
+Mat prevFrame;
+bool init = false;
+float thresh=110;
+int siz = 8;
+/// Initialize arguments for the filter
+Point  anchor = Point( -1, -1 );
+double  delta = 0;
+int  ddepth = -1;
 
-float** padd_border(float** src, int h, int w){
-        //init the resulting matrix with 0's floats
-       float** r = new float*[h+2];
-        for(int i = 0; i < h+2; ++i){
-            r[i] = new float[w+2];
-         }
 
-        //Copy the corners of the image
-        r[0][0] = src[0][0]; //north-west
-        r[0][w+1] = src[0][w-1]; //north-east
-        r[h+1][0] = src[h-1][0]; //south-west
-        r[h+1][w+1] = src[h-1][w-1]; //south-east
+float fkX[3][3] = {
+                   {1,0,-1},
+                   {2,0,-2},
+                   {1,0,-1}
+                  };
 
-        //Horizontal borders
-        for(int it=0;it<w;it++){
-                r[0][it+1] = src[0][it]; //north border
-                r[h+1][it+1] = src[h-1][it]; //south border
-        }
-
-        //Vertical borders
-        for(int it=0;it<h;it++){
-                r[it+1][0] = src[it][0]; //east border
-                r[it+1][w+1] = src[it][w-1]; //west border
-        }
-
-        //Fill centre of matrix
-        for(int i=0;i<h;i++){
-                for(int j=0;j<w;j++){
-                        r[i+1][j+1] = src[i][j];
-                }
-        }
-
-        return r;
+//Values for y-derivative kernel
+float fkY[3][3] = { 
+                   {1,2,1},
+                   {0,0,0},
+                   {-1,-2,-1}
+                  };
+  
+Mat derX(Mat src){
+    Mat dst;
+    filter2D(src, dst, ddepth , kx, anchor, delta, BORDER_DEFAULT );
+    return dst;
 };
 
-//Convolve a matrix with a kernel
-float** convolution(float** src, float** ker, int height, int width){
-
-        //Padding the border
-        float** psrc = padd_border(src, height, width);
-        
-        //Height and width after padding
-        unsigned int h = psrc->rows;
-        unsigned int w = psrc->cols;
-
-        //Kernel radius (used as offsets for parsing image block by block)
-        unsigned int rkh = (unsigned int)((ker->rows-1)*0.5f); //horizontal
-        unsigned int rkw = (unsigned int)((ker->cols-1)*0.5f); //vertical
-
-        //Resulting matrix
-        Mat* r = new Mat( Mat::zeros(h, w, CV_8U) );
-        
-        int sum; //Total convolved sum for each pixel
-        
-        //needed for shifting and normalizing
-        int max = -32766; 
-        int min = 32766;
-
-        //for all values in source
-        for(unsigned int i=1;i<h-rkh-1;i++){
-                for(unsigned int j=1;j<w-rkw-1;j++){
-                        sum=0.0; //reset for each pixels/block
-                        //each kernel-sized block
-                        for(unsigned int k=i-rkh;k<i+rkh+1;k++){
-                                for(unsigned int l=j-rkw;l<j+rkw+1;l++){
-                                        sum += (float)psrc->at<uchar>(k, l)*ker->at<float>(k-i+rkh, l-j+rkw);
-                                }
-                        }
-                        //Compute final pixel value
-                        r->at<uchar>(i,j) = sum;
-                        
-                        //find min&max
-                        if(sum>max){
-                                max = sum;
-                        }
-                        else if(sum<min){
-                                min = sum;
-                        }
-                }
-        }
-        //Return the normalized result
-        return normalize(shift(r, min), max, min);
+Mat derY(Mat src){
+    Mat dst;
+    filter2D(src, dst, ddepth , ky, anchor, delta, BORDER_DEFAULT );
+    return dst;
 };
 
+// void apply_temporal_thresh(Mat src){
+//   Mat r = src.clone();
+//   for(int i=0;i<src.rows;i++){
+//     for(int j=0;j<src.cols;j++){
+//       if(src.at<float>(i,j)>thresh){
+//         r.at<float>(i,j) = 1;
+//       }
+//       else{
+//         r.at<float>(i,j) = 0;
+//       }
+//     }
+//   }
+//   imshow("haha", r);
 
-void printMat(float** src, int h, int w){
-    for(int i=0;i<h;i++){
-        for(int j=0;j<w;j++){
-            printf("%f ", src[i][j]);
+// };
+
+ vector<Point2i> get_points(Mat src){
+  vector<Point2i> r;
+  for(int i=0+siz/2;i<src.rows-siz/2;i+=siz){
+    for(int j=0+siz/2;j<src.cols-siz/2;j+=siz){
+      int sum=0;
+      for(int k=i-siz/2;k<i+siz/2;k++){
+        for(int l=j-siz/2;l<j+siz/2;l++){
+          sum+=src.at<float>(i,j);
         }
-        printf("\n");
+      }
+      //if(sum/400>thresh){
+        r.push_back(Point2i(i,j));
+      //}
     }
-    printf("\n\n");
-};
+  }
+  return r;
+ };
 
+ // Mat padded_mat(Mat src, int n){
+ //    Mat m = Mat::zeros(src.rows+n, src.cols+n, CV_8UC1);
+ //    for(int i=n/2;i<m.rows-n/2;i++){
+ //      for(int j=n/2;j<m.cols-n/2;j++){
+ //        m.at<float>(i,j) = src.at<float>(i-n/2, j-n/2);
+ //      }
+ //    }
+ //    return m;
+ // };
 
-void init_kernel_y(){
-    ky = new float*[3];
-    for(int i = 0; i < 3; ++i){
-        ky[i] = new float[3];
+ Mat compute_region(Point2i p, int n, Mat dx, Mat dy, Mat dt){
+    float sum_dx2 = 0;
+    float sum_dy2 = 0;
+    float sum_dx_dy = 0;
+    float sum_dx_dt = 0;
+    float sum_dy_dt = 0;
+    for(int i=p.x-n/2;i<p.x+n/2;i++){
+      for(int j=p.y-n/2;j<p.y+n/2;j++){
+        sum_dx2+=dx.at<float>(i,j)*dx.at<float>(i,j);
+       // cout<<dx.at<float>(i,j)<<" "<<dx.at<float>(i,j)*dx.at<float>(i,j)<<" "<<sum_dx2<<"\n";
+        sum_dy2+=dy.at<float>(i,j)*dy.at<float>(i,j);
+        sum_dx_dy+=dx.at<float>(i,j)*dy.at<float>(i,j);
+        sum_dx_dt+=dx.at<float>(i,j)*dt.at<float>(i,j);
+        sum_dy_dt+=dy.at<float>(i,j)*dt.at<float>(i,j); 
+      }
     }
-    ky[0][0] = 1.0f;
-    ky[0][1] = 2.0f;
-    ky[0][2] = 1.0f;
-
-    ky[1][0] = 0.0f;
-    ky[1][1] = 0.0f;
-    ky[1][2] = 0.0f;
-
-    ky[2][0] = -1.0f;
-    ky[2][1] = -2.0f;
-    ky[2][2] = -1.0f;
-
-};
-
-void init_kernel_x(){
-    kx = new float*[3];
-    for(int i = 0; i < 3; ++i){
-        kx[i] = new float[3];
-    }
-
-    kx[0][0] = 1.0f;
-    kx[0][1] = 0.0f;
-    kx[0][2] = -1.0f;
-
-    kx[1][0] = 2.0f;
-    kx[1][1] = 0.0f;
-    kx[1][2] = -2.0f;
-
-    kx[2][0] = 1.0f;
-    kx[2][1] = 0.0f;
-    kx[2][2] = -1.0f;
-};
+    Mat A = Mat::zeros(2, 2, CV_32F);
+    A.at<float>(0,0) = sum_dx2;
+    A.at<float>(0,1) = sum_dx_dy;
+    A.at<float>(1,0) = sum_dx_dy;
+    A.at<float>(1,1) = sum_dy2;
+    Mat Ap = A.inv(DECOMP_LU);
+    Mat b = Mat::zeros(2, 1, CV_32F);
+    b.at<float>(0,0) = -sum_dx_dt;
+    b.at<float>(1,0) = -sum_dy_dt;
+    //cout<<"a:"<<A<<"\n\n"<<"b:"<<b<<"\n\n";
+    return Ap*b;
+ };
 
 int main(int, char**)
 {
-    init_kernel_x();
-    init_kernel_y();
-    printMat(padd_border(kx, 3, 3), 5, 5);
-    printMat(padd_border(ky, 3, 3), 5, 5);
-    // VideoCapture cap(0); // open the default camera
-    // if(!cap.isOpened())  // check if we succeeded
-    //     return -1;
-    // namedWindow("Camera",1);
-    // for(;;)
-    // {
-    //     Mat frame;
-    //     cap >> frame; // get a new frame from camera
-    //     imshow("Camera", frame);
-    //     if(waitKey(30) >= 0) break;
-    // }
-    // the camera will be deinitialized automatically in VideoCapture destructor
+    kx = Mat(3, 3, CV_32FC1, &fkX);
+    ky = Mat(3, 3, CV_32FC1, &fkY);
+
+      VideoCapture cap(0); // open the default camera
+    if(!cap.isOpened())  // check if we succeeded
+        return -1;
+    //namedWindow("Camera",1);
+    for(;;)
+    {   
+         Mat frame;
+         Mat frame_gray;
+         Mat frame_gray2;
+         cap >> frame;
+         cvtColor(frame, frame_gray2, CV_BGR2GRAY); 
+        frame_gray2.convertTo(frame_gray, CV_32FC1);
+        Mat acc = Mat::zeros(frame.rows, frame.cols, CV_8UC1);
+        // cvConvertScale(&frame_gray2, &frame_gray, 1.0 / 255.0, 0.0);
+        if(init){
+            Mat derx, dery;   
+            // get a new frame from camera
+            derx = derX(frame_gray);
+            dery = derY(frame_gray);
+            Mat tilda = prevFrame - frame_gray;
+
+            //Mat padd_dx = padded_mat(derx, 4);
+            //Mat padd_dy = padded_mat(dery, 4);
+           //Mat padd_dt = padded_mat(tilda,4);
+            
+
+            vector<Point2i> p = get_points(tilda);
+            vector<Point2f> v;
+            Mat reg;
+            float vx, vy;
+            int px, py;
+            for(vector<Point2i>::const_iterator i = p.begin(); i != p.end(); ++i) {
+              reg = compute_region(*i, siz, derx, dery, tilda);
+              vx = reg.at<float>(0,0);
+              vy = reg.at<float>(1,0);
+              float mag =  sqrt(vx*vx + vy*vy);
+              vx /= mag;
+              vy /= mag;
+              px = (int)((float)i->y + vx * (mag + siz/2));
+              py = (int)((float)i->x + vy * (mag + siz/2));
+              v.push_back(Point2f(reg.at<float>(0,0), reg.at<float>(1,0)));
+
+
+              if(mag>0.5f){
+              line(frame, Point(i->y, i->x), Point(px,py), Scalar(0,0,255), 1, CV_AA);
+              for(int k=i->x-siz/2;k<i->x+siz/2;k++){
+                for(int l=i->y-siz/2;l<i->y+siz/2;l++){
+                    acc.at<uchar>(k, l) = 255;                
+                }
+              }
+
+              double angle = atan2((double)i->x-py, (double)i->y-px);
+
+//               int ax = (int) ( px +  4 * cos(angle + 3.1415/4));
+//               int ay = (int) ( py +  4 * sin(angle + 3.1415/4));
+
+//               int bx = (int) ( px +  5 * cos(angle – 3.1415/4));
+// int by = (int) ( py +  5 * sin(angle – 3.1415/4));
+
+              int ax = (int) (px + 4* cos(angle + 3.1415/4));
+              int ay = (int) (py + 4* sin(angle + 3.1415/4));
+              int bx = (int) (px + 4* cos(angle - 3.1415/4));
+              int by = (int) (py + 4* cos(angle - 3.1415/4));
+
+
+
+
+
+              line(frame, Point(ax,ay), Point(px,py), Scalar(0,0,255), 1, CV_AA);
+              line(frame, Point(bx,by), Point(px,py), Scalar(0,0,255), 1, CV_AA);
+              }
+              else{
+                 circle(frame, Point(i->y,i->x), 1, Scalar(0,0,255), 1, 8, 0 );
+              }
+              //line(frame, Point(i->y, i->x), Point(py,px), Scalar(0,255,0), 1, CV_AA);
+              //cout<<xx<<" "<<yy<<"\n";
+              //cout<<reg<<"\n"; 
+            }
+
+            float mx=0, my=0;
+            for(vector<Point2f>::const_iterator i = v.begin(); i != v.end(); ++i) {
+              mx+=i->x;
+              my+=i->y;
+            }
+            mx/=v.size();
+            my/=v.size();
+            line(frame, Point(frame.cols/2, frame.rows/2), Point(frame.cols/2+mx*frame.cols, frame.rows/2+my*frame.rows), Scalar(0,255,0), 8, CV_AA);
+
+
+
+            Mat a, b, c, d;
+            frame_gray.convertTo(a, CV_8UC1);
+            derx.convertTo(b, CV_8UC1);
+            dery.convertTo(c, CV_8UC1);
+            tilda.convertTo(d, CV_8UC1);
+            imshow("acc", acc);
+            imshow("asda", frame);
+            // imshow("Camera", a);
+            // imshow("derx", b);
+            // imshow("dery", c);
+            // imshow("temporal", d);
+            prevFrame = frame_gray;
+            if(waitKey(30) >= 0) break;
+        }
+        else{
+            prevFrame = frame_gray;
+            init = true;
+        }
+    }
+
     return 0;
 }
